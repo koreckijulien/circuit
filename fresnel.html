@@ -1259,7 +1259,10 @@ const EXAMPLES=[
    wires:[[4,4,7,4],[4,7,13,7]], probes:[['i','R1'],['vd','C1']]},
   {name:'Source de courant sinus sur RC parallèle',
    comps:[['IAC',4,7,3,{amp:1e-3,f:1e3}],['R',7,4,1,{v:1e3}],['C',10,4,1,{v:159e-9}],['GND',8,7,1]],
-   wires:[[4,4,10,4],[4,7,10,7]], probes:[['v',4,4],['i','Js1']]}
+   wires:[[4,4,10,4],[4,7,10,7]], probes:[['v',4,4],['i','Js1']]},
+  {name:'TP ENER 1 TP 6 Montage 1',
+   comps:[['VAC',4,4,1,{amp:325,f:50}]]
+  }
 ];
 function reset(){ S.comps=[]; S.wires=new Set(); S.probes=[]; S.sel=null; S.nextId=1; S.nextPid=1; S.count={}; S.tc=0; S.sim=null; }
 function loadExample(i){

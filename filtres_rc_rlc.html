@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Filtres RC et circuit RLC – temps, Bode, impédance</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#12151c; --panel:#1b2030; --txt:#dde3f0; --mut:#8a94ad; --in:#4fc3f7; --out:#ffb74d; --acc:#81c784; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.4 system-ui,Segoe UI,Arial,sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:10px 18px; border-bottom:1px solid #2a3148; }
+  h1 { font-size:18px; margin:0; }
+  main { display:grid; grid-template-columns:300px 1fr; gap:12px; padding:12px; }
+  .panel { background:var(--panel); border-radius:8px; padding:12px; }
+  .ctl { margin-bottom:10px; }
+  .ctl label { display:flex; justify-content:space-between; color:var(--mut); }
+  .ctl output { color:var(--txt); font-variant-numeric:tabular-nums; }
+  input[type=range] { width:100%; }
+  select, input[type=number] { width:100%; background:#0f1320; color:var(--txt); border:1px solid #2f3858; border-radius:4px; padding:4px; }
+  #schema { width:100%; height:90px; background:#0f1320; border-radius:6px; margin-bottom:10px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .grid .wide { grid-column:1 / -1; }
+  canvas.plot { width:100%; height:260px; display:block; background:#0f1320; border-radius:6px; }
+  .wide canvas.plot { height:280px; }
+  h2 { font-size:13px; margin:0 0 6px; color:var(--mut); font-weight:600; }
+  .leg span { margin-right:14px; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:4px; }
+  table { width:100%; border-collapse:collapse; }
+  td { padding:2px 4px; } td:last-child { text-align:right; font-variant-numeric:tabular-nums; color:var(--acc); }
+  .note { color:var(--mut); font-size:12px; margin-top:8px; }
+  @media (max-width:900px){ main{grid-template-columns:1fr;} .grid{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+<header><h1>Filtre RC &amp; circuit résonnant RLC série — réponse temporelle, Bode et impédance</h1></header>
+<main>
+  <aside class="panel">
+    <canvas id="schema"></canvas>
+    <div class="ctl"><label>Circuit / sortie mesurée</label>
+      <select id="type">
+        <option value="rc-lp">RC passe-bas (sortie sur C)</option>
+        <option value="rc-hp">RC passe-haut (sortie sur R)</option>
+        <option value="rlc-r" selected>RLC série passe-bande (sortie sur R)</option>
+        <option value="rlc-c">RLC série passe-bas résonant (sortie sur C)</option>
+        <option value="rlc-l">RLC série passe-haut résonant (sortie sur L)</option>
+      </select></div>
+    <div class="ctl"><label>R <output id="Ro"></output></label><input type="range" id="R" min="0" max="6" step="0.01"></div>
+    <div class="ctl" id="Lc"><label>L <output id="Lo"></output></label><input type="range" id="L" min="-6" max="1" step="0.01"></div>
+    <div class="ctl"><label>C <output id="Co"></output></label><input type="range" id="C" min="-12" max="-3" step="0.01"></div>
+    <hr style="border-color:#2a3148">
+    <div class="ctl"><label>Fréquence du signal f <output id="fo"></output></label><input type="range" id="f" min="0" max="7" step="0.005"></div>
+    <div class="ctl"><label>Amplitude d'entrée <output id="Ao"></output></label><input type="range" id="A" min="0.1" max="10" step="0.1" value="1"></div>
+    <div class="ctl"><label>Forme d'onde</label>
+      <select id="wave"><option value="sin">Sinus</option><option value="sq">Carré</option></select></div>
+    <div class="ctl"><label>Périodes affichées <output id="No"></output></label><input type="range" id="N" min="1" max="20" step="1" value="4"></div>
+    <div class="ctl"><label><input type="checkbox" id="trans"> Afficher le régime transitoire (départ à t = 0)</label></div>
+    <table id="info"></table>
+    <div class="note">Cliquer sur un diagramme fréquentiel (Bode ou impédance) pour placer la fréquence du signal.</div>
+  </aside>
+
+  <section class="grid">
+    <div class="panel wide">
+      <h2>Domaine temporel</h2>
+      <div class="leg"><span><i class="dot" style="background:var(--in)"></i>Entrée v<sub>in</sub></span><span><i class="dot" style="background:var(--out)"></i>Sortie v<sub>out</sub></span></div>
+      <canvas class="plot" id="cTime"></canvas>
+    </div>
+    <div class="panel"><h2>Bode – gain |H| (dB)</h2><canvas class="plot" id="cMag"></canvas></div>
+    <div class="panel"><h2>Bode – phase de H (°)</h2><canvas class="plot" id="cPh"></canvas></div>
+    <div class="panel"><h2>Impédance d'entrée |Z| (Ω)</h2><canvas class="plot" id="cZ"></canvas></div>
+    <div class="panel"><h2>Impédance d'entrée – phase de Z (°)</h2><canvas class="plot" id="cZp"></canvas></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const PREF = {"-12":"p","-9":"n","-6":"µ","-3":"m","0":"","3":"k","6":"M","9":"G"};
+
+// Notation ingénieur avec préfixes SI
+function eng(x, unit="", digits=3) {
+  if (!isFinite(x)) return "∞ " + unit;
+  if (x === 0) return "0 " + unit;
+  let e = Math.floor(Math.log10(Math.abs(x)) / 3) * 3;
+  e = Math.max(-12, Math.min(9, e));
+  let v = x / Math.pow(10, e);
+  if (Math.abs(Number(v.toPrecision(digits))) >= 1000 && e < 9) { e += 3; v = x / Math.pow(10, e); }
+  return Number(v.toPrecision(digits)) + " " + PREF[e] + unit;
+}
+
+// --- Complexes [re, im]
+const cdiv = (a,b)=>{ const d=b[0]*b[0]+b[1]*b[1]; return [(a[0]*b[0]+a[1]*b[1])/d,(a[1]*b[0]-a[0]*b[1])/d]; };
+const cabs = a=>Math.hypot(a[0],a[1]);
+const carg = a=>Math.atan2(a[1],a[0])*180/Math.PI;
+
+const S = {};
+function readParams() {
+  S.type = $("type").value;
+  S.R = Math.pow(10, +$("R").value);
+  S.L = Math.pow(10, +$("L").value);
+  S.C = Math.pow(10, +$("C").value);
+  S.f = Math.pow(10, +$("f").value);
+  S.A = +$("A").value;
+  S.wave = $("wave").value;
+  S.N = +$("N").value;
+  S.trans = $("trans").checked;
+  S.rlc = S.type.startsWith("rlc");
+}
+
+// Impédances des éléments, impédance d'entrée et fonction de transfert
+function impedances(f) {
+  const w = 2*Math.PI*f;
+  const Zr=[S.R,0], Zc=[0,-1/(w*S.C)], Zl=[0,w*S.L];
+  const Zin = S.rlc ? [S.R, w*S.L - 1/(w*S.C)] : [S.R, -1/(w*S.C)];
+  return {Zr,Zc,Zl,Zin};
+}
+function H(f) {
+  const {Zr,Zc,Zl,Zin} = impedances(f);
+  const out = {"rc-lp":Zc,"rc-hp":Zr,"rlc-r":Zr,"rlc-c":Zc,"rlc-l":Zl}[S.type];
+  return cdiv(out, Zin);
+}
+function charFreq() {
+  return S.rlc ? 1/(2*Math.PI*Math.sqrt(S.L*S.C)) : 1/(2*Math.PI*S.R*S.C);
+}
+
+// --- Simulation temporelle (RK4) : états [vC] (RC) ou [vC, i] (RLC)
+function vin(t, T) {
+  if (S.wave === "sin") return S.A*Math.sin(2*Math.PI*t/T);
+  const p = (((t/T)+1e-9) % 1 + 1) % 1;
+  return p < 0.5 ? S.A : -S.A;
+}
+function deriv(t, x, T) {
+  const v = vin(t, T);
+  if (!S.rlc) return [(v - x[0])/(S.R*S.C)];
+  return [x[1]/S.C, (v - S.R*x[1] - x[0])/S.L];
+}
+function output(t, x, T) {
+  const v = vin(t, T);
+  switch (S.type) {
+    case "rc-lp": case "rlc-c": return x[0];
+    case "rc-hp": return v - x[0];
+    case "rlc-r": return S.R*x[1];
+    case "rlc-l": return v - S.R*x[1] - x[0];
+  }
+}
+function simulate() {
+  const T = 1/S.f, span = S.N*T;
+  const npts = 1500;
+  const t = [], vi = [], vo = [];
+  if (S.wave === "sin" && !S.trans) {            // régime établi analytique
+    const h = H(S.f), g = cabs(h), ph = Math.atan2(h[1], h[0]);
+    for (let k=0;k<=npts;k++){ const tt=span*k/npts; t.push(tt); vi.push(vin(tt,T)); vo.push(S.A*g*Math.sin(2*Math.PI*tt/T+ph)); }
+    return {t,vi,vo};
+  }
+  const w0 = S.rlc ? 1/Math.sqrt(S.L*S.C) : 1/(S.R*S.C);
+  const stiff = S.rlc ? Math.max(w0, S.R/S.L, 1/(S.R*S.C)) : w0;
+  let dt = Math.min(T/400, 0.4/stiff);
+  const tau = S.rlc ? Math.max(2*S.L/S.R, S.R*S.C) : S.R*S.C;
+  let warm = 0;
+  if (!S.trans) {
+    warm = Math.min(7*tau, 4e5*dt);
+    warm = Math.ceil(warm/T)*T;
+  }
+  const total = warm + span;
+  const nsteps = Math.min(Math.ceil(total/dt), 6e5);
+  dt = total/nsteps;
+  const rec = Math.max(1, Math.floor((span/dt)/npts));
+  let x = S.rlc ? [0,0] : [0];
+  let tt = 0;
+  const add = (a,b)=>a.map((v,i)=>v+b[i]);
+  const mul = (a,c)=>a.map(v=>v*c);
+  for (let n=0;n<=nsteps;n++) {
+    if (tt >= warm - 1e-15 && ((n - Math.round(warm/dt)) % rec === 0)) {
+      t.push(tt-warm); vi.push(vin(tt,T)); vo.push(output(tt,x,T));
+    }
+    const k1=deriv(tt,x,T), k2=deriv(tt+dt/2,add(x,mul(k1,dt/2)),T),
+          k3=deriv(tt+dt/2,add(x,mul(k2,dt/2)),T), k4=deriv(tt+dt,add(x,mul(k3,dt)),T);
+    x = x.map((v,i)=>v+dt/6*(k1[i]+2*k2[i]+2*k3[i]+k4[i]));
+    tt += dt;
+  }
+  return {t,vi,vo};
+}
+
+// --- Tracé générique
+function niceStep(range, n) {
+  const raw = range/n, p = Math.pow(10, Math.floor(Math.log10(raw))), m = raw/p;
+  return (m<1.5?1:m<3?2:m<7?5:10)*p;
+}
+function plot(cv, o) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, Hh = cv.clientHeight;
+  cv.width = W*dpr; cv.height = Hh*dpr;
+  const g = cv.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,W,Hh);
+  const m = {l:62,r:12,t:10,b:34}, pw = W-m.l-m.r, ph = Hh-m.t-m.b;
+  const fx = o.xlog ? Math.log10 : (v=>v), fy = o.ylog ? Math.log10 : (v=>v);
+  const x0=fx(o.xmin), x1=fx(o.xmax), y0=fy(o.ymin), y1=fy(o.ymax);
+  const X = v => m.l + (fx(v)-x0)/(x1-x0)*pw;
+  const Y = v => m.t + ph - (fy(v)-y0)/(y1-y0)*ph;
+  cv._geo = {m,pw,x0,x1,xlog:o.xlog};
+  g.font = "11px system-ui"; g.fillStyle="#8a94ad"; g.strokeStyle="#262e47"; g.lineWidth=1;
+  // grille X
+  g.textAlign="center";
+  let xt = [];
+  if (o.xlog) { for (let d=Math.ceil(x0); d<=Math.floor(x1); d++) xt.push(Math.pow(10,d)); }
+  else { const s=niceStep(o.xmax-o.xmin,6); for (let v=Math.ceil(o.xmin/s)*s; v<=o.xmax+s*1e-9; v+=s) xt.push(v); }
+  for (const v of xt) { const px=X(v); g.beginPath(); g.moveTo(px,m.t); g.lineTo(px,m.t+ph); g.stroke(); g.fillText(o.xfmt(v), px, Hh-m.b+14); }
+  // grille Y
+  g.textAlign="right";
+  let yt = [];
+  if (o.ylog) { for (let d=Math.ceil(y0); d<=Math.floor(y1); d++) yt.push(Math.pow(10,d)); }
+  else { const s=niceStep(o.ymax-o.ymin,6); for (let v=Math.ceil(o.ymin/s)*s; v<=o.ymax+s*1e-9; v+=s) yt.push(v); }
+  for (const v of yt) { const py=Y(v); g.beginPath(); g.moveTo(m.l,py); g.lineTo(m.l+pw,py); g.stroke(); g.fillText(o.yfmt(v), m.l-5, py+4); }
+  g.strokeStyle="#4a5578"; g.strokeRect(m.l,m.t,pw,ph);
+  g.textAlign="center"; g.fillText(o.xlabel, m.l+pw/2, Hh-4);
+  // axe zéro
+  if (!o.ylog && o.ymin<0 && o.ymax>0) { g.strokeStyle="#5a6688"; g.beginPath(); g.moveTo(m.l,Y(0)); g.lineTo(m.l+pw,Y(0)); g.stroke(); }
+  g.save(); g.beginPath(); g.rect(m.l,m.t,pw,ph); g.clip();
+  for (const s of o.series) {
+    g.strokeStyle=s.color; g.lineWidth=s.w||1.8; g.beginPath();
+    s.x.forEach((xv,i)=>{ const px=X(xv), py=Y(Math.max(o.ymin*(o.ylog?0.5:1), s.y[i])); i?g.lineTo(px,py):g.moveTo(px,py); });
+    g.stroke();
+  }
+  // références horizontales
+  for (const r of (o.hlines||[])) { g.strokeStyle="#7a5"; g.setLineDash([4,4]); g.lineWidth=1; g.beginPath(); g.moveTo(m.l,Y(r)); g.lineTo(m.l+pw,Y(r)); g.stroke(); g.setLineDash([]); }
+  // marqueur de fréquence
+  if (o.marker) {
+    const px=X(o.marker);
+    g.strokeStyle="#ef5350"; g.lineWidth=1.2; g.setLineDash([5,4]); g.beginPath(); g.moveTo(px,m.t); g.lineTo(px,m.t+ph); g.stroke(); g.setLineDash([]);
+    if (o.markerY!==undefined) { g.fillStyle="#ef5350"; g.beginPath(); g.arc(px,Y(o.markerY),4.5,0,7); g.fill(); }
+  }
+  g.restore();
+}
+const logRange = (arr, pad) => { const lo=Math.min(...arr), hi=Math.max(...arr); return [Math.pow(10,Math.floor(Math.log10(lo))), Math.pow(10,Math.ceil(Math.log10(hi)))]; };
+
+function drawSchema() {
+  const cv = $("schema"), dpr = window.devicePixelRatio||1, W=cv.clientWidth, Hh=cv.clientHeight;
+  cv.width=W*dpr; cv.height=Hh*dpr; const g=cv.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0);
+  g.strokeStyle="#cfd6e6"; g.fillStyle="#cfd6e6"; g.lineWidth=1.6; g.font="12px system-ui"; g.textAlign="center";
+  const y=30, yb=75, out=S.type;
+  const box=(x,label,hl)=>{ g.strokeStyle=hl?"#ffb74d":"#cfd6e6"; g.fillStyle=hl?"#ffb74d":"#cfd6e6"; g.strokeRect(x,y-8,36,16); g.fillText(label,x+18,y-14); };
+  const cap=(x,label,hl)=>{ g.strokeStyle=hl?"#ffb74d":"#cfd6e6"; g.fillStyle=hl?"#ffb74d":"#cfd6e6"; g.beginPath(); g.moveTo(x,y-10); g.lineTo(x,y+10); g.moveTo(x+8,y-10); g.lineTo(x+8,y+10); g.stroke(); g.fillText(label,x+4,y-14); };
+  const ind=(x,label,hl)=>{ g.strokeStyle=hl?"#ffb74d":"#cfd6e6"; g.fillStyle=hl?"#ffb74d":"#cfd6e6"; g.beginPath(); for(let i=0;i<4;i++) g.arc(x+4.5+i*9,y,4.5,Math.PI,0); g.stroke(); g.fillText(label,x+18,y-14); };
+  g.strokeStyle="#cfd6e6"; g.beginPath(); g.moveTo(14,y); g.lineTo(20,y); g.stroke(); g.fillText("v_in",20,y+26);
+  let x=20; const parts = S.rlc ? ["R","L","C"] : ["R","C"];
+  const hl = {"rc-lp":"C","rc-hp":"R","rlc-r":"R","rlc-c":"C","rlc-l":"L"}[out];
+  for (const p of parts) {
+    g.strokeStyle="#cfd6e6"; g.beginPath(); g.moveTo(x,y); g.lineTo(x+8,y); g.stroke(); x+=8;
+    if (p==="R") { box(x,"R",hl==="R"); x+=36; }
+    if (p==="L") { ind(x,"L",hl==="L"); x+=36; }
+    if (p==="C") { cap(x,"C",hl==="C"); x+=8; }
+  }
+  g.strokeStyle="#cfd6e6"; g.beginPath(); g.moveTo(x,y); g.lineTo(x+14,y); g.lineTo(x+14,yb); g.lineTo(14,yb); g.lineTo(14,y); g.stroke();
+  g.fillStyle="#ffb74d"; g.fillText("sortie surlignée = v_out", W/2+60, yb+(-4));
+}
+
+function update() {
+  readParams();
+  $("Ro").textContent = eng(S.R,"Ω"); $("Lo").textContent = eng(S.L,"H"); $("Co").textContent = eng(S.C,"F");
+  $("fo").textContent = eng(S.f,"Hz"); $("Ao").textContent = eng(S.A,"V"); $("No").textContent = S.N;
+  $("Lc").style.display = S.rlc ? "" : "none";
+  drawSchema();
+
+  const fc = charFreq();
+  const fmin = fc/1e3, fmax = fc*1e3, np = 500;
+  const fs=[], mag=[], pha=[], zm=[], zp=[];
+  for (let k=0;k<np;k++) {
+    const f = fmin*Math.pow(fmax/fmin, k/(np-1));
+    const h=H(f), z=impedances(f).Zin;
+    fs.push(f); mag.push(20*Math.log10(cabs(h))); pha.push(carg(h)); zm.push(cabs(z)); zp.push(carg(z));
+  }
+  const fm = S.f, h0=H(fm), z0=impedances(fm).Zin;
+  const hdB = 20*Math.log10(cabs(h0));
+  const fxfmt = v=>eng(v,"Hz",2);
+
+  const sim = simulate();
+  const amp = Math.max(S.A, ...sim.vo.map(Math.abs)) * 1.1;
+  plot($("cTime"), {xmin:0,xmax:sim.t[sim.t.length-1],ymin:-amp,ymax:amp,xlabel:"temps",
+    xfmt:v=>eng(v,"s",2), yfmt:v=>eng(v,"V",2),
+    series:[{x:sim.t,y:sim.vi,color:"#4fc3f7"},{x:sim.t,y:sim.vo,color:"#ffb74d",w:2.2}]});
+
+  const mlo = Math.min(-60, Math.floor(Math.min(...mag)/20)*20), mhi = Math.max(10, Math.ceil(Math.max(...mag)/10)*10);
+  plot($("cMag"), {xlog:true,xmin:fmin,xmax:fmax,ymin:mlo,ymax:mhi,xlabel:"fréquence",xfmt:fxfmt,yfmt:v=>v+" dB",
+    series:[{x:fs,y:mag,color:"#81c784"}],hlines:[-3],marker:fm,markerY:hdB});
+  plot($("cPh"), {xlog:true,xmin:fmin,xmax:fmax,ymin:-180,ymax:180,xlabel:"fréquence",xfmt:fxfmt,yfmt:v=>v+"°",
+    series:[{x:fs,y:pha,color:"#ba68c8"}],marker:fm,markerY:carg(h0)});
+  const [zlo,zhi] = logRange(zm);
+  plot($("cZ"), {xlog:true,ylog:true,xmin:fmin,xmax:fmax,ymin:zlo,ymax:zhi,xlabel:"fréquence",xfmt:fxfmt,yfmt:v=>eng(v,"Ω",2),
+    series:[{x:fs,y:zm,color:"#4dd0e1"}],marker:fm,markerY:cabs(z0)});
+  plot($("cZp"), {xlog:true,xmin:fmin,xmax:fmax,ymin:-90,ymax:90,xlabel:"fréquence",xfmt:fxfmt,yfmt:v=>v+"°",
+    series:[{x:fs,y:zp,color:"#f06292"}],marker:fm,markerY:carg(z0)});
+
+  const rows = [];
+  if (S.rlc) {
+    const Q = Math.sqrt(S.L/S.C)/S.R;
+    rows.push(["Fréquence propre f₀", eng(fc,"Hz")], ["Facteur de qualité Q", Number(Q.toPrecision(3))],
+              ["Amortissement ζ = 1/2Q", Number((1/(2*Q)).toPrecision(3))],
+              ["Bande passante f₀/Q", eng(fc/Q,"Hz")], ["Impédance caract. √(L/C)", eng(Math.sqrt(S.L/S.C),"Ω")]);
+  } else {
+    rows.push(["Fréquence de coupure f_c", eng(fc,"Hz")], ["Constante de temps τ = RC", eng(S.R*S.C,"s")]);
+  }
+  rows.push(["— à la fréquence f —",""],
+    ["|H| = v_out/v_in", Number(cabs(h0).toPrecision(3))], ["Gain", Number(hdB.toPrecision(3))+" dB"],
+    ["Déphasage", Number(carg(h0).toPrecision(3))+"°"], ["Amplitude v_out", eng(S.A*cabs(h0),"V")],
+    ["|Z| entrée", eng(cabs(z0),"Ω")], ["Phase de Z", Number(carg(z0).toPrecision(3))+"°"],
+    ["Courant (amplitude)", eng(S.A/cabs(z0),"A")]);
+  if (S.wave==="sq") rows.push(["(carré : valeurs pour le fondamental)",""]);
+  $("info").innerHTML = rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join("");
+}
+
+// valeurs initiales
+$("R").value=3; $("L").value=-2; $("C").value=-7; $("f").value=Math.log10(5000);
+document.querySelectorAll("input,select").forEach(e=>e.addEventListener("input",update));
+$("type").addEventListener("change", ()=>{
+  // valeurs par défaut cohérentes avec le circuit choisi
+  readParams();
+  if (!S.rlc) $("f").value = Math.log10(charFreq());
+  update();
+});
+for (const id of ["cMag","cPh","cZ","cZp"]) {
+  const cv=$(id);
+  const pick = e => {
+    if (!cv._geo || (e.type==="mousemove" && !(e.buttons&1))) return;
+    const r=cv.getBoundingClientRect(), G=cv._geo;
+    const u=Math.min(1,Math.max(0,(e.clientX-r.left-G.m.l)/G.pw));
+    $("f").value = G.x0 + u*(G.x1-G.x0);
+    update();
+  };
+  cv.addEventListener("mousedown",pick); cv.addEventListener("mousemove",pick);
+}
+window.addEventListener("resize",update);
+update();
+</script>
+</body>
+</html>
